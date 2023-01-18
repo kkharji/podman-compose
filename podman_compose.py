@@ -1056,7 +1056,6 @@ class Podman:
         cmd_args = cmd_args or []
         xargs = self.compose.get_podman_args(cmd) if cmd else []
         cmd_ls = [self.podman_path, *podman_args, cmd] + xargs + cmd_args
-        log(cmd_ls)
         return subprocess.check_output(cmd_ls)
 
     def exec(
@@ -1104,7 +1103,6 @@ class Podman:
 
         if wait:
             exit_code = p.wait()
-            log("exit code:", exit_code)
             if obj is not None:
                 obj.exit_code = exit_code
 
@@ -1374,7 +1372,7 @@ class PodmanCompose:
             if not self.podman_version:
                 log("it seems that you do not have `podman` installed")
                 sys.exit(1)
-            log("using podman version: " + self.podman_version)
+            log("podman version: " + self.podman_version)
         cmd_name = args.command
         compose_required = cmd_name != "version" and (
             cmd_name != "systemd" or args.action != "create-unit"
@@ -2012,7 +2010,7 @@ def get_excluded(compose, args):
         for service in args.services:
             excluded -= compose.services[service]["_deps"]
             excluded.discard(service)
-    log("** excluding: ", excluded)
+    log("excluding: ", ", ".join(excluded))
     return excluded
 
 
@@ -2055,7 +2053,6 @@ def compose_up(compose, args):
     create_pods(compose, args)
     for cnt in compose.containers:
         if cnt["_service"] in excluded:
-            log("** skipping: ", cnt["name"])
             continue
         podman_args = container_to_args(compose, cnt, detached=args.detach)
         subproc = compose.podman.run([], podman_command, podman_args)
@@ -2089,7 +2086,6 @@ def compose_up(compose, args):
         )
         log_formatter = ["sed", "-e", log_formatter]
         if cnt["_service"] in excluded:
-            log("** skipping: ", cnt["name"])
             continue
         # TODO: remove sleep from podman.run
         obj = compose if exit_code_from == cnt["_service"] else None
