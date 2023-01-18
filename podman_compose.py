@@ -22,8 +22,36 @@ import hashlib
 import random
 import json
 import glob
+import signal
 
 from threading import Thread
+from queue import Queue, Empty
+
+
+class ASyncStreamReader:
+    """
+    This class implement an async stream reader, useful when reading from stdout/stderr in subprocesses
+    """
+
+    def __init__(self, stdstream):
+        def threadrun(queue, stream):
+            while True:
+                row = stream.readline()
+                if row:
+                    queue.put(row)
+                else:
+                    return
+
+        self.queue = Queue()
+        self.readerthread = Thread(target=threadrun, args=(self.queue, stdstream))
+        self.readerthread.daemon = True
+        self.readerthread.start()
+
+    def readline(self):
+        try:
+            return self.queue.get(False)
+        except Empty:
+            return None
 
 import shlex
 
@@ -1079,13 +1107,16 @@ class Podman:
         sleep=1,
         obj=None,
         log_formatter=None,
+        printcmd=True,
+        **kwargs
     ):
         if obj is not None:
             obj.exit_code = None
         cmd_args = list(map(str, cmd_args or []))
         xargs = self.compose.get_podman_args(cmd) if cmd else []
         cmd_ls = [self.podman_path, *podman_args, cmd] + xargs + cmd_args
-        log(" ".join([str(i) for i in cmd_ls]))
+        if printcmd:
+            log(" ".join([str(i) for i in cmd_ls]))
         if self.dry_run:
             return None
         # subprocess.Popen(args, bufsize = 0, executable = None, stdin = None, stdout = None, stderr = None, preexec_fn = None, close_fds = False, shell = False, cwd = None, env = None, universal_newlines = False, startupinfo = None, creationflags = 0)
@@ -1099,7 +1130,7 @@ class Podman:
             )  # pylint: disable=consider-using-with
             p.stdout.close()  # Allow p_process to receive a SIGPIPE if logging process exits.
         else:
-            p = subprocess.Popen(cmd_ls)  # pylint: disable=consider-using-with
+            p = subprocess.Popen(cmd_ls, **kwargs)  # pylint: disable=consider-using-with
 
         if wait:
             exit_code = p.wait()
@@ -1128,6 +1159,27 @@ class Podman:
         volumes = output.splitlines()
         return volumes
 
+def mergesort_podman_logs(logs, keep_timestamp=False):
+    logfile = []
+    for svc, stdout in logs:
+        for row in stdout:
+            if row.strip() == "":
+                continue
+            ts, msg = row.split(" ", 1)
+            if keep_timestamp:
+                msg = " ".join([ts, msg])
+            logfile.append((svc, ts, msg))
+
+    sorted(logfile, key=lambda x: x[1])
+    return "\n".join(["%-10s: %s" % (x[0][:10], x[2]) for x in logfile])
+
+def read_all_standard_line(stdout):
+    ret = []
+    while True:
+        line = stdout.readline()
+        if line is None:
+            return ret
+        ret.append(line.decode("utf8").strip())
 
 def normalize_service(service, sub_dir=""):
     # make `build.context` relative to sub_dir
@@ -2068,6 +2120,18 @@ def compose_up(compose, args):
         args.abort_on_container_exit = True
 
     threads = []
+    # Note: to have timestamps (needed for log sorting) we need to create detached containers, then use podman logs
+
+    # register handler for Ctrl-C
+    def stop_all_containers(_, frame):
+        # stop all containers
+        print("Stopping all containers")
+        for cnt in compose.containers:
+            print("Stopping %s" % cnt["name"])
+            compose.podman.run(["stop", cnt["name"]], wait=True, printcmd=False)
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, stop_all_containers)
 
     max_service_length = 0
     for cnt in compose.containers:
@@ -2690,7 +2754,7 @@ def compose_exec_parse(parser):
         default=None,
         help="Working directory inside the container",
     )
-    parser.add_argument("service", metavar="service", nargs=None, help="service name")
+    parser.add_argument("service", metavar="service", nargs="*", help="service name")
     parser.add_argument(
         "cnt_command",
         metavar="command",
